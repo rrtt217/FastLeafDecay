@@ -12,7 +12,9 @@ are cleaned up.
   distance to the nearest log for every leaf at the same time (multi-source BFS). Survival
   rule matches Cuberite's own `cBlockLeavesHandler` (a log within 6 leaves steps), with far
   fewer block reads.
-- **Gradual removal** — leaves go out in batches instead of vanishing in one frame.
+- **Gradual removal** — leaves go out in batches instead of vanishing in one frame, and
+  **placing a log back inside that window cancels the pending removal** of the leaves it
+  reaches again.
 - **Floating vine cleanup** — vines that lose their support when the canopy disappears are
   removed, including the meta-0 vines Cuberite itself never destroys.
 - **Vanilla drops** — saplings, sticks and apples come from the server's own block handler,
@@ -31,7 +33,8 @@ are cleaned up.
 
 ## Configuration
 
-`settings.ini`:
+`settings.ini` (write `Key=Value` without spaces — Cuberite stores key names verbatim,
+so `Key = Value` reads as the key `"Key "`; the plugin also accepts that spelling):
 
 | Key | Default | Meaning |
 | --- | --- | --- |

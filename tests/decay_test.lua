@@ -202,11 +202,12 @@ FLD_Busy = {}
 FLD_Pending = {}
 FLD_Stats =
 {
-	Passes        = 0,
-	LeavesQueued  = 0,
-	LeavesDropped = 0,
-	LeavesScanned = 0,
-	Aborts        = 0,
+	Passes          = 0,
+	LeavesQueued    = 0,
+	LeavesDropped   = 0,
+	LeavesCancelled = 0,
+	LeavesScanned   = 0,
+	Aborts          = 0,
 }
 
 dofile(PluginDir .. "/decay.lua")
@@ -475,6 +476,68 @@ Check("CleanFloatingVines=false still drops the leaf",
 Check("CleanFloatingVines=false keeps the vine", GetBlock(41, 11, 40) == E_BLOCK_VINES,
 	"block type " .. tostring(GetBlock(41, 11, 40)))
 FLD_Config.CleanFloatingVines = true
+
+
+-- ---------------------------------------------------------------------------
+-- 8) a log placed back inside the decay window cancels the queued leaves
+-- ---------------------------------------------------------------------------
+
+ResetWorld()
+Scheduled = {}
+Drops = {}
+FLD_Stats.LeavesCancelled = 0
+FLD_Config.Gradual = true
+FLD_Config.DecayIntervalTicks = 1
+FLD_Config.LeavesPerBatch = 1
+
+SetBlock(50, 12, 50, E_BLOCK_LOG, 0)
+SetBlock(51, 12, 50, E_BLOCK_LEAVES, 0)
+SetBlock(52, 12, 50, E_BLOCK_LEAVES, 0)
+SetBlock(50, 12, 50, E_BLOCK_AIR, 0)
+Dropped = FLD_ProcessRemovedLog(World, 50, 12, 50)
+Check("both orphaned leaves are queued", Dropped == 2, "queued " .. tostring(Dropped))
+
+-- Put the log back before the queue drains.
+SetBlock(50, 12, 50, E_BLOCK_LOG, 0)
+FLD_ProcessPlacedLog(World, 50, 12, 50)
+PumpScheduledTasks(50)
+Check("placing the log back keeps the near leaf", GetBlock(51, 12, 50) == E_BLOCK_LEAVES,
+	"block type " .. tostring(GetBlock(51, 12, 50)))
+Check("placing the log back keeps the far leaf", GetBlock(52, 12, 50) == E_BLOCK_LEAVES,
+	"block type " .. tostring(GetBlock(52, 12, 50)))
+Check("cancelled leaves are counted", FLD_Stats.LeavesCancelled == 2,
+	tostring(FLD_Stats.LeavesCancelled))
+Check("nothing was dropped after cancelling", #Drops == 0, #Drops .. " pickups")
+
+-- Only the reconnected component is cancelled; an unrelated queue entry still decays.
+ResetWorld()
+Scheduled = {}
+Drops = {}
+FLD_Config.LeavesPerBatch = 1
+SetBlock(60, 12, 60, E_BLOCK_LOG, 0)
+SetBlock(61, 12, 60, E_BLOCK_LEAVES, 0)
+SetBlock(70, 12, 70, E_BLOCK_LOG, 0)
+SetBlock(71, 12, 70, E_BLOCK_LEAVES, 0)
+SetBlock(60, 12, 60, E_BLOCK_AIR, 0)
+SetBlock(70, 12, 70, E_BLOCK_AIR, 0)
+FLD_ProcessRemovedLog(World, 60, 12, 60)
+FLD_ProcessRemovedLog(World, 70, 12, 70)
+SetBlock(60, 12, 60, E_BLOCK_LOG, 0)
+FLD_ProcessPlacedLog(World, 60, 12, 60)
+PumpScheduledTasks(50)
+Check("reconnected leaf survives", GetBlock(61, 12, 60) == E_BLOCK_LEAVES,
+	"block type " .. tostring(GetBlock(61, 12, 60)))
+Check("unrelated queued leaf still decays", GetBlock(71, 12, 70) == E_BLOCK_AIR,
+	"block type " .. tostring(GetBlock(71, 12, 70)))
+
+-- A log placed when nothing is queued must be a no-op.
+ResetWorld()
+Scheduled = {}
+SetBlock(80, 12, 80, E_BLOCK_LOG, 0)
+Check("placing a log with an empty queue is a no-op", FLD_ProcessPlacedLog(World, 80, 12, 80) == 0)
+Check("no task is scheduled for a no-op", #Scheduled == 0, #Scheduled .. " tasks")
+
+FLD_Config.Gradual = false
 
 
 -- ---------------------------------------------------------------------------

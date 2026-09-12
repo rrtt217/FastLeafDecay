@@ -242,6 +242,38 @@ local function FLD_ClearCheckBits(a_World, a_Leaves)
 end
 
 
+--- Key used to find a queued leaf again (the queue stores plain coordinates, never block
+-- references).
+local function FLD_QueueKey(a_X, a_Y, a_Z)
+	return a_X .. "," .. a_Y .. "," .. a_Z
+end
+
+
+--- Takes the given leaves out of a world's gradual queue.  Entries are marked as false
+-- rather than deleted so that the FIFO head index stays valid.
+-- Returns the number of leaves that were actually still queued.
+local function FLD_CancelQueued(a_World, a_Leaves)
+	local Pending = FLD_Pending[a_World]
+	if (Pending == nil) then
+		return 0
+	end
+
+	local Cancelled = 0
+	for Index = 1, #a_Leaves do
+		local Leaf = a_Leaves[Index]
+		local Key = FLD_QueueKey(Leaf.X, Leaf.Y, Leaf.Z)
+		local Position = Pending.Index[Key]
+		if (Position ~= nil) then
+			Pending.Queue[Position] = false
+			Pending.Index[Key] = nil
+			Cancelled = Cancelled + 1
+		end
+	end
+	FLD_Stats.LeavesCancelled = FLD_Stats.LeavesCancelled + Cancelled
+	return Cancelled
+end
+
+
 --- Task run once per DecayIntervalTicks while leaves are queued for gradual decay.
 function FLD_ProcessPending(a_World)
 	local Pending = (FLD_Pending ~= nil) and FLD_Pending[a_World] or nil
@@ -253,12 +285,16 @@ function FLD_ProcessPending(a_World)
 	local Queue = Pending.Queue
 
 	-- Take the next batch, oldest first, so the canopy crumbles outwards from the log.
+	-- Entries marked as false were cancelled by a log placed back in the meantime.
 	local Batch = {}
 	local Count = 0
 	while (Count < Config.LeavesPerBatch) and (Pending.Head <= #Queue) do
-		Batch[#Batch + 1] = Queue[Pending.Head]
+		local Leaf = Queue[Pending.Head]
 		Pending.Head = Pending.Head + 1
-		Count = Count + 1
+		if (Leaf ~= false) then
+			Batch[#Batch + 1] = Leaf
+			Count = Count + 1
+		end
 	end
 
 	if (#Batch > 0) then
@@ -272,6 +308,7 @@ function FLD_ProcessPending(a_World)
 		end
 		Pending.Queue = {}
 		Pending.Survivors = {}
+		Pending.Index = {}
 		Pending.Head = 1
 		Pending.Scheduled = false
 		FLD_Pending[a_World] = nil
@@ -286,10 +323,12 @@ end
 -- FLD_Config.MaxDistance leaves steps.
 -- a_CenterX/Y/Z only bounds the search and indexes the visited set; the caller passes the
 -- position of the removed log or the explosion center.
+-- With a_Cancel the pass does not drop or queue anything: it only cancels the leaves it
+-- found to be in reach of a log again from the world's gradual queue.
 -- Returns the number of leaves that were dropped (instant mode) or queued (gradual mode)
 -- and the number of scanned leaves, or nil plus a reason string when the pass was aborted
 -- (the world was left untouched in that case).
-function FLD_ProcessLeaves(a_World, a_CenterX, a_CenterY, a_CenterZ, a_Seeds)
+function FLD_ProcessLeaves(a_World, a_CenterX, a_CenterY, a_CenterZ, a_Seeds, a_Cancel)
 	local Config = FLD_Config
 	local MaxDistance = Config.MaxDistance
 	local MaxScan = Config.MaxScan
@@ -432,27 +471,39 @@ function FLD_ProcessLeaves(a_World, a_CenterX, a_CenterY, a_CenterZ, a_Seeds)
 		end
 	end
 
-	-- Collect the leaves that are out of reach of any log.
+	-- Collect the leaves that are out of reach of any log, and the ones that still reach one.
 	local Orphans = {}
 	local Survivors = {}
 	for Index = 1, #LeafList do
 		local Leaf = LeafList[Index]
 		if (Distance[Index] == nil) then
-			if Config.DecayPlacedLeaves then
-				Orphans[#Orphans + 1] = Leaf
-			else
-				-- Meta bit 0x04 marks player-placed (persistent) leaves.
-				local Meta = a_World:GetBlockMeta(Vector3i(Leaf.X, Leaf.Y, Leaf.Z))
-				if ((Meta % 8) < 4) then
+			if (not a_Cancel) then
+				-- A revalidation pass only cares about what survived.
+				if Config.DecayPlacedLeaves then
 					Orphans[#Orphans + 1] = Leaf
+				else
+					-- Meta bit 0x04 marks player-placed (persistent) leaves.
+					local Meta = a_World:GetBlockMeta(Vector3i(Leaf.X, Leaf.Y, Leaf.Z))
+					if ((Meta % 8) < 4) then
+						Orphans[#Orphans + 1] = Leaf
+					end
 				end
 			end
-		elseif Config.ClearNativeCheckBit then
+		elseif a_Cancel or Config.ClearNativeCheckBit then
 			Survivors[#Survivors + 1] = Leaf
 		end
 	end
 
 	local Scanned = #LeafList
+
+	if a_Cancel then
+		-- A log was placed back (HOOK_PLAYER_PLACED_BLOCK).  Everything that is in reach of a
+		-- log again leaves the gradual queue, so rebuilding inside the decay window stops
+		-- the process instead of letting a stale snapshot run to completion.
+		FLD_CancelQueued(a_World, Survivors)
+		return 0, Scanned
+	end
+
 	if (#Orphans == 0) then
 		return 0, Scanned
 	end
@@ -460,11 +511,12 @@ function FLD_ProcessLeaves(a_World, a_CenterX, a_CenterY, a_CenterZ, a_Seeds)
 	if Config.Gradual then
 		local Pending = FLD_Pending[a_World]
 		if (Pending == nil) then
-			Pending = {Queue = {}, Head = 1, Survivors = {}, Scheduled = false}
+			Pending = {Queue = {}, Head = 1, Survivors = {}, Index = {}, Scheduled = false}
 			FLD_Pending[a_World] = Pending
 		end
 		for _, Leaf in ipairs(Orphans) do
 			Pending.Queue[#Pending.Queue + 1] = {X = Leaf.X, Y = Leaf.Y, Z = Leaf.Z}
+			Pending.Index[FLD_QueueKey(Leaf.X, Leaf.Y, Leaf.Z)] = #Pending.Queue
 		end
 		for _, Leaf in ipairs(Survivors) do
 			Pending.Survivors[#Pending.Survivors + 1] = Leaf
@@ -484,16 +536,9 @@ function FLD_ProcessLeaves(a_World, a_CenterX, a_CenterY, a_CenterZ, a_Seeds)
 end
 
 
---- Handles a log that has just been removed at the given position.  Only leaves that are
--- adjacent to the removed log can be orphaned by it, so those are used as the seeds.
-function FLD_ProcessRemovedLog(a_World, a_X, a_Y, a_Z)
-	if (a_World == nil) or (FLD_Config == nil) or (not FLD_Config.Enabled) then
-		return nil, "disabled"
-	end
-	if FLD_Busy[a_World] then
-		return nil, "already processing this world"
-	end
-
+--- Collects the leaves adjacent to a block; they seed a decay or revalidation pass.
+-- Returns the seed list, or nil plus a reason when a neighbouring chunk is not loaded.
+local function FLD_CollectLeafSeeds(a_World, a_X, a_Y, a_Z)
 	local Seeds = {}
 	for Neighbour = 1, 6 do
 		local Offset = FLD_NEIGHBOURS[Neighbour]
@@ -510,6 +555,24 @@ function FLD_ProcessRemovedLog(a_World, a_X, a_Y, a_Z)
 			end
 		end
 	end
+	return Seeds
+end
+
+
+--- Handles a log that has just been removed at the given position.  Only leaves that are
+-- adjacent to the removed log can be orphaned by it, so those are used as the seeds.
+function FLD_ProcessRemovedLog(a_World, a_X, a_Y, a_Z)
+	if (a_World == nil) or (FLD_Config == nil) or (not FLD_Config.Enabled) then
+		return nil, "disabled"
+	end
+	if FLD_Busy[a_World] then
+		return nil, "already processing this world"
+	end
+
+	local Seeds, Reason = FLD_CollectLeafSeeds(a_World, a_X, a_Y, a_Z)
+	if (Seeds == nil) then
+		return nil, Reason
+	end
 	if (#Seeds == 0) then
 		return 0, 0
 	end
@@ -518,6 +581,38 @@ function FLD_ProcessRemovedLog(a_World, a_X, a_Y, a_Z)
 	local Dropped, Scanned = FLD_ProcessLeaves(a_World, a_X, a_Y, a_Z, Seeds)
 	FLD_Busy[a_World] = nil
 	return Dropped, Scanned
+end
+
+
+--- Handles a log that has just been placed back at the given position.  Leaves that are
+-- waiting in the gradual queue and are in reach of a log again are cancelled, so a log
+-- placed inside the decay window stops the process.
+function FLD_ProcessPlacedLog(a_World, a_X, a_Y, a_Z)
+	if (a_World == nil) or (FLD_Config == nil) or (not FLD_Config.Enabled) then
+		return 0
+	end
+	if (FLD_Pending[a_World] == nil) then
+		return 0  -- nothing queued for this world
+	end
+	if FLD_Busy[a_World] then
+		return 0
+	end
+
+	local Seeds, Reason = FLD_CollectLeafSeeds(a_World, a_X, a_Y, a_Z)
+	if (Seeds == nil) then
+		if FLD_Config.Debug then
+			LOG("[FastLeafDecay] cannot revalidate the placed log: " .. tostring(Reason))
+		end
+		return 0
+	end
+	if (#Seeds == 0) then
+		return 0
+	end
+
+	FLD_Busy[a_World] = true
+	FLD_ProcessLeaves(a_World, a_X, a_Y, a_Z, Seeds, true)
+	FLD_Busy[a_World] = nil
+	return 1
 end
 
 

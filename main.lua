@@ -30,11 +30,12 @@ FLD_Busy = {}
 FLD_Pending = {}
 FLD_Stats =
 {
-	Passes        = 0,
-	LeavesQueued  = 0,
-	LeavesDropped = 0,
-	LeavesScanned = 0,
-	Aborts        = 0,
+	Passes          = 0,
+	LeavesQueued    = 0,
+	LeavesDropped   = 0,
+	LeavesCancelled = 0,
+	LeavesScanned   = 0,
+	Aborts          = 0,
 }
 
 
@@ -88,12 +89,27 @@ local function LoadConfig(a_Plugin)
 		LOG("[FastLeafDecay] cannot read " .. Path .. ", using built-in defaults")
 	end
 
+	-- cIniFile stores key names verbatim, so a line written as "Key = value" is stored
+	-- under the name "Key " and a plain lookup of "Key" misses it.  Accept both spellings.
+	local MissingMarker = "\1fastleafdecay-missing\1"
+	local function RawValue(a_Group, a_Key, a_Default)
+		local Value = Ini:GetValue(a_Group, a_Key, MissingMarker)
+		if (Value ~= MissingMarker) then
+			return Value
+		end
+		Value = Ini:GetValue(a_Group, a_Key .. " ", MissingMarker)
+		if (Value ~= MissingMarker) then
+			return Value
+		end
+		return a_Default
+	end
+
 	local function Bool(a_Group, a_Key)
-		return ParseBool(Ini:GetValue(a_Group, a_Key, tostring(DEFAULT_CONFIG[a_Key])), DEFAULT_CONFIG[a_Key])
+		return ParseBool(RawValue(a_Group, a_Key, tostring(DEFAULT_CONFIG[a_Key])), DEFAULT_CONFIG[a_Key])
 	end
 
 	local function Num(a_Group, a_Key, a_Min, a_Max)
-		local Value = tonumber(Ini:GetValue(a_Group, a_Key, tostring(DEFAULT_CONFIG[a_Key])))
+		local Value = tonumber(RawValue(a_Group, a_Key, tostring(DEFAULT_CONFIG[a_Key])))
 		if (Value == nil) then
 			Value = DEFAULT_CONFIG[a_Key]
 		end
@@ -169,6 +185,20 @@ function FLD_OnPlayerBrokenBlock(a_Player, a_BlockX, a_BlockY, a_BlockZ, a_Block
 end
 
 
+--- HOOK_PLAYER_PLACED_BLOCK: putting a log back while leaves are still queued for gradual
+-- decay must stop those leaves from being removed.
+function FLD_OnPlayerPlacedBlock(a_Player, a_BlockX, a_BlockY, a_BlockZ, a_BlockType, a_BlockMeta)
+	if (FLD_Config == nil) or (not FLD_Config.Enabled) or (not FLD_Config.Gradual) then
+		return false
+	end
+	if (not FLD_IsLog(a_BlockType)) then
+		return false
+	end
+	FLD_ProcessPlacedLog(a_Player:GetWorld(), a_BlockX, a_BlockY, a_BlockZ)
+	return false
+end
+
+
 --- HOOK_EXPLODED: an explosion may have removed logs; the leaves in its blast area are
 -- used as seeds.  Disabled by default ([Features] EnableOnExplosion).
 function FLD_OnExploded(a_World, a_ExplosionSize, a_CanCauseFire, a_X, a_Y, a_Z, a_Source, a_SourceData)
@@ -202,8 +232,9 @@ function FLD_HandleCommand(a_Split, a_Player)
 	if (Sub == "stats") then
 		if (a_Player ~= nil) then
 			a_Player:SendMessageInfo(string.format(
-				"FastLeafDecay: %d 次腐烂扫描，共掉落 %d 个树叶（扫描 %d 个），跳过 %d 次",
-				FLD_Stats.Passes, FLD_Stats.LeavesDropped, FLD_Stats.LeavesScanned, FLD_Stats.Aborts))
+				"FastLeafDecay: %d 次腐烂扫描，共掉落 %d 个树叶（扫描 %d 个），被放回原木撤销 %d 个，跳过 %d 次",
+				FLD_Stats.Passes, FLD_Stats.LeavesDropped, FLD_Stats.LeavesScanned,
+				FLD_Stats.LeavesCancelled, FLD_Stats.Aborts))
 		end
 		return true
 	end
@@ -229,6 +260,7 @@ function Initialize(Plugin)
 	LoadConfig(Plugin)
 
 	cPluginManager:AddHook(cPluginManager.HOOK_PLAYER_BROKEN_BLOCK, FLD_OnPlayerBrokenBlock)
+	cPluginManager:AddHook(cPluginManager.HOOK_PLAYER_PLACED_BLOCK, FLD_OnPlayerPlacedBlock)
 	cPluginManager:AddHook(cPluginManager.HOOK_EXPLODED,            FLD_OnExploded)
 
 	-- Register the commands declared in Info.lua (/fld and the fldtest console command).
@@ -238,7 +270,9 @@ function Initialize(Plugin)
 
 	LOG("[FastLeafDecay] loaded: max distance " .. FLD_Config.MaxDistance
 		.. ", player breaks " .. (FLD_Config.EnableOnPlayerBreak and "on" or "off")
-		.. ", explosions " .. (FLD_Config.EnableOnExplosion and "on" or "off"))
+		.. ", explosions " .. (FLD_Config.EnableOnExplosion and "on" or "off")
+		.. ", gradual " .. (FLD_Config.Gradual and "on" or "off")
+		.. " (" .. FLD_Config.LeavesPerBatch .. " leaves / " .. FLD_Config.DecayIntervalTicks .. " ticks)")
 
 	return true
 end
