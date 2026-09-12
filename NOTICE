@@ -1,0 +1,53 @@
+FastLeafDecay
+Copyright 2026 FastLeafDecay contributors
+https://github.com/rrtt217/FastLeafDecay
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+
+Third-party material
+--------------------
+
+This product contains material derived from Cuberite
+(https://github.com/cuberite/cuberite, https://cuberite.org),
+Copyright 2011-2025 Cuberite Contributors,
+licensed under the Apache License, Version 2.0.
+
+The following parts of this plugin were written by reading Cuberite's source
+and mirroring its behaviour; they are derivative works of the files listed:
+
+  * decay.lua - leaf decay rules
+    Mirrors src/Blocks/BlockLeaves.h (cBlockLeavesHandler):
+      - the survival rule: a leaves block lives while a log can be reached by
+        walking at most LEAVES_CHECK_DISTANCE (= 6) leaves blocks;
+      - player-placed leaves identified by meta bit 0x04 are left alone;
+      - meta bit 0x08 is the "needs a decay check" flag, which the plugin clears
+        on leaves it has already proven to be in reach of a log;
+      - vanilla drop probabilities for saplings, sticks and apples
+        (sapling 1/20, jungle sapling 1/40, apple 1/200, sticks 1/50 counting
+        1-2 items), applied through the server's own block handler.
+
+  * decay.lua - vine support rules
+    Re-implements src/Blocks/BlockVines.h (cBlockVinesHandler):
+      - IsBlockAttachable(): a block is a vine support unless it is one of the
+        glass/chest/piston family, otherwise cBlockInfo::IsSolid() decides;
+      - GetMaxMeta(): the side bits of the vine meta, the "solid block above"
+        rule and the "vine above shares a side bit" rule.
+    This re-implementation exists because GetMaxMeta() returns VINE_UNCHANGED
+    whenever "meta & maxMeta == meta", which is always true for a vine whose
+    meta has already been reduced to 0 - such a vine is never destroyed, so
+    leaves floating vines behind once the canopy is gone.
+
+  * decay.lua, selftest.lua - block update semantics
+    Verified against src/Chunk.cpp (cChunk::SetBlock queues the position for
+    the neighbour check that cChunk::CheckBlocks() runs each tick) and
+    src/Blocks/BlockHandler.cpp (cBlockHandler::Check() notifies all six
+    neighbours), which is why removing leaves through
+    cWorld::DropBlockAsPickups() wakes up dependent blocks such as vines.
+
+  * selftest.lua - the 6-step distance boundary and the 68-leaves canopy layout
+    were derived from reading the cBlockLeavesHandler::HasNearLog() search and
+    from Cuberite's own LEAVES_CHECK_DISTANCE constant.
+
+No Cuberite source file is copied verbatim into this repository; only the
+behaviour listed above was re-implemented in Lua.
