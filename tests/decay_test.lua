@@ -541,6 +541,101 @@ FLD_Config.Gradual = false
 
 
 -- ---------------------------------------------------------------------------
+-- 9) merged canopies: two trees whose leaves form one connected component
+-- ---------------------------------------------------------------------------
+
+-- Log A - leaf chain 101..109 - log B.  Chopping A must leave the far end of the chain
+-- standing, because it is still within 6 leaves steps of B.
+ResetWorld()
+Drops = {}
+Scheduled = {}
+SetBlock(100, 12, 100, E_BLOCK_LOG, 0)
+for x = 101, 109 do
+	SetBlock(x, 12, 100, E_BLOCK_LEAVES, 0)
+end
+SetBlock(110, 12, 100, E_BLOCK_LOG, 0)
+SetBlock(111, 12, 100, E_BLOCK_LEAVES, 0)   -- the neighbour tree's own leaf
+SetBlock(110, 13, 100, E_BLOCK_LEAVES, 0)   -- ... and one above its trunk
+
+SetBlock(100, 12, 100, E_BLOCK_AIR, 0)      -- chop tree A
+Dropped = FLD_ProcessRemovedLog(World, 100, 12, 100)
+Check("merged canopy: only the leaves out of reach of the other tree drop", Dropped == 3,
+	"dropped " .. tostring(Dropped))
+Check("leaf 7 steps from the other trunk drops", GetBlock(103, 12, 100) == E_BLOCK_AIR,
+	"block type " .. tostring(GetBlock(103, 12, 100)))
+Check("leaf 6 steps from the other trunk survives", GetBlock(104, 12, 100) == E_BLOCK_LEAVES,
+	"block type " .. tostring(GetBlock(104, 12, 100)))
+Check("the other tree's own leaves are untouched",
+	(GetBlock(111, 12, 100) == E_BLOCK_LEAVES) and (GetBlock(110, 13, 100) == E_BLOCK_LEAVES),
+	tostring(GetBlock(111, 12, 100)) .. "/" .. tostring(GetBlock(110, 13, 100)))
+
+-- Once the second trunk falls too, the whole merged canopy has to go.
+SetBlock(110, 12, 100, E_BLOCK_AIR, 0)
+Dropped = FLD_ProcessRemovedLog(World, 110, 12, 100)
+local Remaining = 0
+for x = 100, 112 do
+	for y = 11, 14 do
+		if GetBlock(x, y, 100) == E_BLOCK_LEAVES then
+			Remaining = Remaining + 1
+		end
+	end
+end
+Check("after both trunks fall the merged canopy is gone", Remaining == 0,
+	Remaining .. " leaves left, dropped " .. tostring(Dropped))
+
+-- Two 5x5 canopies merged sideways (trunks 4 apart, the canopies share the x = 202
+-- column): chopping one trunk keeps every leaf the other trunk can still reach.
+ResetWorld()
+Drops = {}
+SetBlock(200, 12, 200, E_BLOCK_LOG, 0)
+SetBlock(204, 12, 200, E_BLOCK_LOG, 0)
+for dx = -2, 2 do
+	for dz = -2, 2 do
+		if ((math.abs(dx) < 2) or (math.abs(dz) < 2)) and not ((dx == 0) and (dz == 0)) then
+			SetBlock(200 + dx, 12, 200 + dz, E_BLOCK_LEAVES, 0)
+			SetBlock(204 + dx, 12, 200 + dz, E_BLOCK_LEAVES, 0)
+		end
+	end
+end
+Check("merged sideways: the canopies are one component",
+	(GetBlock(202, 12, 200) == E_BLOCK_LEAVES) and (GetBlock(198, 12, 200) == E_BLOCK_LEAVES))
+
+SetBlock(200, 12, 200, E_BLOCK_AIR, 0)      -- chop the left trunk
+Dropped = FLD_ProcessRemovedLog(World, 200, 12, 200)
+Check("merged sideways: the leaf 2 steps from the right trunk survives",
+	GetBlock(202, 12, 200) == E_BLOCK_LEAVES,
+	"block type " .. tostring(GetBlock(202, 12, 200)))
+Check("merged sideways: the far left leaf drops", GetBlock(198, 12, 200) == E_BLOCK_AIR,
+	"block type " .. tostring(GetBlock(198, 12, 200)))
+local RightLeaves = 0
+for dx = -2, 2 do
+	for dz = -2, 2 do
+		if GetBlock(204 + dx, 12, 200 + dz) == E_BLOCK_LEAVES then
+			RightLeaves = RightLeaves + 1
+		end
+	end
+end
+Check("merged sideways: the neighbour's canopy is untouched", RightLeaves == 20,
+	RightLeaves .. " right-tree leaves, dropped " .. tostring(Dropped))
+
+-- A component that spreads past MaxRadius must abort instead of guessing.
+ResetWorld()
+SetBlock(300, 12, 400, E_BLOCK_LOG, 0)
+for x = 301, 360 do
+	SetBlock(x, 12, 400, E_BLOCK_LEAVES, 0)
+end
+SetBlock(300, 12, 400, E_BLOCK_AIR, 0)
+local SavedRadius = FLD_Config.MaxRadius
+FLD_Config.MaxRadius = 16
+local RadiusResult, RadiusReason = FLD_ProcessRemovedLog(World, 300, 12, 400)
+Check("a component spreading past MaxRadius aborts",
+	(RadiusResult == nil) and (RadiusReason == "leaves spread too far"), tostring(RadiusReason))
+Check("an aborted pass drops nothing", GetBlock(301, 12, 400) == E_BLOCK_LEAVES,
+	"block type " .. tostring(GetBlock(301, 12, 400)))
+FLD_Config.MaxRadius = SavedRadius
+
+
+-- ---------------------------------------------------------------------------
 -- Summary
 -- ---------------------------------------------------------------------------
 
